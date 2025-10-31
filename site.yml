@@ -1,0 +1,26 @@
+---
+# site.yml
+# Main playbook orchestrating all roles in the Ansible Logger pipeline
+
+- name: Local logging and insights pipeline
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - group_vars/all.yml
+
+  roles:
+    - role: collector_commands
+      tags:
+        - collector
+        - all
+
+    - role: analyzer_files
+      tags:
+        - analyzer
+        - all
+
+    - role: analyzer_insights
+      tags:
+        - insights
+        - all
