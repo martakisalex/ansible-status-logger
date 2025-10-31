@@ -1,0 +1,40 @@
+---
+- name: Check kubernetes subdir
+  when: enable_analyzer | default(true)
+  ansible.builtin.stat:
+    path: "{{ log_dir }}/kubernetes"
+  register: k8s_dir
+
+- name: Find kubectl pod snapshot TXT files
+  when: (enable_analyzer | default(true)) and (k8s_dir.stat.exists)
+  ansible.builtin.find:
+    paths: "{{ log_dir }}/kubernetes"
+    patterns: ["kubectl-get-pods-*.txt"]
+    file_type: file
+    recurse: false
+  register: found_pod_txt
+
+- name: Derive list of already indexed K8s source_file paths
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    already_indexed_k8s: >-
+      {{
+        (master_json.kubernetes.snapshots | default([]))
+        | map(attribute='source_file') | list
+      }}
+
+- name: Filter new (not yet indexed) K8s TXT files
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    new_txt_files: >-
+      {{
+        (found_pod_txt.files | default([]))
+        | selectattr('path', 'defined')
+        | rejectattr('path', 'in', already_indexed_k8s | default([]))
+        | list
+      }}
+
+- name: No new kubectl pod snapshots to index
+  when: (enable_analyzer | default(true)) and (new_txt_files | length == 0)
+  ansible.builtin.debug:
+    msg: "No new kubectl pod snapshots to index."

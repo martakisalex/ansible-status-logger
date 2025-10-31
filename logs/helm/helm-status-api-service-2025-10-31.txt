@@ -1,0 +1,23 @@
+[2025-10-31T18:05:00Z] Running: helm status api-service -n application
+NAME: api-service
+LAST DEPLOYED: Fri Oct 31 12:57:21 2025
+NAMESPACE: application
+STATUS: deployed
+REVISION: 11
+CHART: api-service-2.3.0
+APP VERSION: 2.3.0
+RESOURCES:
+==> v1/Deployment
+NAME            READY   UP-TO-DATE   AVAILABLE   AGE
+api-service     3/3     3            3           5d18h
+
+==> v1/Service
+NAME            TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+api-service     ClusterIP   10.96.212.34    <none>        80/TCP    5d18h
+
+NOTES:
+1. Check API health:
+     kubectl get pods -n application -l "app=api-service"
+2. Port-forward locally:
+     kubectl port-forward svc/api-service 8080:80 -n application
+--- command completed successfully ---

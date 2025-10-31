@@ -1,0 +1,10 @@
+- name: Write updated master JSON back to disk
+  when: (enable_analyzer | default(true))
+        and ( (new_txt_files     | default([]) | length > 0)
+              or (new_helm_history | default([]) | length > 0)
+              or (new_helm_list    | default([]) | length > 0)
+              or (new_helm_status  | default([]) | length > 0) )
+  ansible.builtin.copy:
+    dest: "{{ analysis_output_json }}"
+    content: "{{ master_json | to_nice_json }}"
+    mode: "0600"

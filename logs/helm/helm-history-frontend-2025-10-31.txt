@@ -1,0 +1,7 @@
+[2025-10-31T18:10:00Z] Running: helm history frontend -n application
+REVISION    UPDATED                        STATUS      CHART              APP VERSION    DESCRIPTION
+1           2025-10-15 09:22:10.615933     superseded  frontend-1.8.0     1.8.0          Install complete
+2           2025-10-22 14:38:54.482201     superseded  frontend-1.8.1     1.8.1          Upgrade complete
+3           2025-10-25 08:19:02.201043     superseded  frontend-1.8.2     1.8.2          Rollback to 1.8.0
+4           2025-10-30 18:41:03.921145     deployed    frontend-1.8.2     1.8.2          Upgrade complete
+--- command completed successfully ---

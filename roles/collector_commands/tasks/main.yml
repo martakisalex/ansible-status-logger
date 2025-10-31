@@ -1,0 +1,54 @@
+---
+# Run simple commands and append their outputs to timestamped daily logs.
+
+- name: Ensure log directory exists
+  when: enable_collector_commands
+  ansible.builtin.file:
+    path: "{{ log_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Compute timestamps (UTC)
+  when: enable_collector_commands
+  ansible.builtin.set_fact:
+    ts: "{{ lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+    date_ymd: "{{ lookup('pipe','date -u +%Y-%m-%d') }}"
+
+- name: Collect command outputs (one timestamp per execution block, tolerant)
+  when: enable_collector_commands
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ts="{{ ts }}"
+    out_file="{{ log_dir }}/{{ item.target }}-{{ date_ymd }}.txt"
+
+    {
+      printf '[%s] Running: %s\n' "$ts" "{{ item.cmd }}"
+
+      set +e
+      output=$({{ item.cmd }} 2>&1)
+      rc=$?
+      set -e
+
+      printf '%s\n' "$output"
+      if [ "$rc" -ne 0 ]; then
+        printf '--- command exited with code %d ---\n' "$rc"
+      else
+        printf '--- command completed successfully ---\n'
+      fi
+    } >> "$out_file"
+  args:
+    executable: /bin/bash
+  loop: "{{ commands_to_collect }}"
+  loop_control:
+    label: "{{ item.name }}"
+  failed_when: false
+
+# Non-sensitive confirmation (file path only; not the data)
+- name: Confirm write (paths only)
+  when: enable_collector_commands
+  ansible.builtin.debug:
+    msg: "Appended output for {{ item.name }} to {{ log_dir }}/{{ item.target }}-{{ date_ymd }}.txt"
+  loop: "{{ commands_to_collect }}"
+  loop_control:
+    label: "{{ item.name }}"

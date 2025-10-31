@@ -1,0 +1,91 @@
+# Cluster Report
+
+Generated at (UTC): **{{ generated_at_utc }}**
+
+---
+
+## Kubernetes
+
+{% if insights.k8s.has_k8s %}
+**Latest snapshot**: `{{ insights.k8s.latest.ts }}`  
+**Namespace**: `{{ insights.k8s.latest.namespace }}`  
+**Total pods**: **{{ insights.k8s.latest.summary.total_pods }}**
+
+**Unhealthy pods** ({{ insights.k8s.unhealthy | length }}):
+{% if insights.k8s.unhealthy | length == 0 %}
+- none
+{% else %}
+{% for p in insights.k8s.unhealthy %}
+- `{{ p.name }}` — status: `{{ p.status }}`, ready: `{{ p.ready }}`
+{% endfor %}
+{% endif %}
+{% else %}
+_No Kubernetes data._
+{% endif %}
+
+---
+
+## Helm (list -A)
+
+{% if insights.helm_list.has_helm %}
+**Snapshot TS**: `{{ insights.helm_list.latest.ts }}`  
+**Releases**: **{{ insights.helm_list.latest.summary.total_releases }}**  
+**Problem releases**: **{{ insights.helm_list.bad_releases | length }}**
+
+{% if insights.helm_list.bad_releases | length > 0 %}
+{% for r in insights.helm_list.bad_releases %}
+- `{{ r.name }}@{{ r.namespace }}` — status: `{{ r.status }}`, chart: `{{ r.chart }}` (app `{{ r.app_version }}`)
+{% endfor %}
+{% endif %}
+{% else %}
+_No Helm list data._
+{% endif %}
+
+---
+
+## Helm Status (latest per release)
+
+{% if insights.helm_status_latest | length > 0 %}
+{% for s in insights.helm_status_latest %}
+- `{{ s.release }}@{{ s.namespace }}` — status: `{{ s.status }}`, chart: `{{ s.chart }}` (rev {{ s.revision }}) at `{{ s.ts }}`
+{% endfor %}
+{% else %}
+_No Helm status entries._
+{% endif %}
+
+---
+
+## Diffs
+
+### K8s pods (prev → curr)
+
+{% if insights.k8s_diff.prev_ts is defined %}
+Prev: `{{ insights.k8s_diff.prev_ts }}` → Curr: `{{ insights.k8s_diff.curr_ts }}`
+
+- **Added**: {{ insights.k8s_diff.added | default([]) | join(', ') or 'none' }}
+- **Removed**: {{ insights.k8s_diff.removed | default([]) | join(', ') or 'none' }}
+- **Changed**: {{ insights.k8s_diff.changed | default([]) | join(', ') or 'none' }}
+
+{% if insights.k8s_diff.changes_detail is defined and (insights.k8s_diff.changes_detail | length) > 0 %}
+**Changes detail:**
+{% for c in insights.k8s_diff.changes_detail %}
+- `{{ c.name }}`: `{{ c.prev.status }}` → `{{ c.curr.status }}`, ready `{{ c.prev.ready }}` → `{{ c.curr.ready }}`, restarts `{{ c.prev.restarts }}` → `{{ c.curr.restarts }}`
+{% endfor %}
+{% endif %}
+{% else %}
+_Not enough snapshots to compute K8s pod diffs._
+{% endif %}
+
+---
+
+### Helm list (prev → curr)
+
+{% if insights.helm_list_diff.prev_ts is defined %}
+Prev: `{{ insights.helm_list_diff.prev_ts }}` → Curr: `{{ insights.helm_list_diff.curr_ts }}`
+
+- **Added**: {{ (insights.helm_list_diff.added | map(attribute='key') | list) | default([]) | join(', ') or 'none' }}
+- **Removed**: {{ (insights.helm_list_diff.removed | map(attribute='key') | list) | default([]) | join(', ') or 'none' }}
+- **Changed**: {{ insights.helm_list_diff.changed | default([]) | join(', ') or 'none' }}
+{% else %}
+_Not enough snapshots to compute Helm list diffs._
+{% endif %}

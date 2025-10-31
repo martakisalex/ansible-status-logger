@@ -1,0 +1,9 @@
+[2025-10-31T23:15:00Z] Running: kubectl get pods -n application
+NAMESPACE     NAME                                     READY   STATUS      RESTARTS   AGE
+application   api-service-6b8d4c7f8d-nsx9z             1/1     Running     0          4d22h
+application   frontend-deployment-74f68c9795-ldfgr     1/1     Running     1          5d3h
+application   redis-cache-5b746dc7c4-mznb2             1/1     Running     2          7d1h
+application   analytics-cron-74c6b5cb8f-lfkwz          0/1     Completed   0          12h
+application   mailer-service-649ffbbbc5-vb2tr          1/1     Running     0          2d5h
+application   nginx-proxy-677f5d89cb-xn2tp             1/1     Running     0          10d
+--- command completed successfully ---

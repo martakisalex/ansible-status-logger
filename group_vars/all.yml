@@ -1,0 +1,37 @@
+# --- Basic configuration variables ---
+
+# 1. Directory for all log files
+log_dir: "{{ playbook_dir }}/logs"
+
+# 2. Directory for runtime state files (flags, offsets, etc.)
+state_dir: "{{ lookup('env', 'HOME') }}/ansible-logger/state"
+
+# 3. Keep logs for this many days (used later by rotation)
+log_retention_days: 14
+
+# 4. Which collectors to enable
+enable_collector_commands: true
+enable_collector_history: false   # we'll add this later
+enable_rotation: false            # add later
+enable_scheduler: false           # add launchd later
+
+# Analyzer settings (single master JSON)
+enable_analyzer: true
+analysis_output_json: "{{ log_dir }}/index.json"
+
+# 5. Commands to run and log
+commands_to_collect:
+  - name: hostname
+    cmd: "hostname"
+    target: "hostname"
+    append: true
+
+  - name: whoami
+    cmd: "whoami"
+    target: "whoami"
+    append: true
+
+  - name: uptime
+    cmd: "uptime"
+    target: "uptime"
+    append: true

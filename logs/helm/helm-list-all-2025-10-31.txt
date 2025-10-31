@@ -1,0 +1,8 @@
+[2025-10-31T18:00:00Z] Running: helm list -A
+NAME              NAMESPACE        REVISION    UPDATED                                 STATUS      CHART                 APP VERSION
+api-service       application      11          2025-10-31 12:57:21.045953 -0700 PDT    deployed    api-service-2.3.0     2.3.0
+frontend          application      7           2025-10-30 08:41:03.921145 -0700 PDT    deployed    frontend-1.8.2        1.8.2
+redis-cache       application      4           2025-10-29 09:22:17.441991 -0700 PDT    deployed    redis-17.6.2          7.2.3
+nginx-proxy       networking       3           2025-10-25 10:03:42.178233 -0700 PDT    deployed    nginx-1.12.0          1.27.2
+analytics-cron    data-pipeline    5           2025-10-31 11:59:08.219765 -0700 PDT    deployed    analytics-0.8.3       0.8.3
+--- command completed successfully ---

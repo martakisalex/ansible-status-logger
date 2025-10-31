@@ -1,0 +1,152 @@
+---
+# Build and append Helm "status" snapshots from helm-status-*.txt files
+
+- name: Build Helm status snapshots (meta + resources + notes)
+  when: (enable_analyzer | default(true)) and (new_helm_status | length > 0)
+  no_log: true
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      JQ="{{ jq_bin }}"
+      f="{{ item.path }}"
+      export LC_ALL=C
+
+      # First line: [ISO] Running: helm status <release> -n <ns>
+      first="$(head -n 1 "$f" | tr -d '\r')"
+      ts="$(printf "%s\n" "$first" | sed -n 's/^\[\(.*Z\)\].*$/\1/p')"
+      cmd="$(printf "%s\n" "$first" | sed -n 's/^.*Running: \(.*\)$/\1/p')"
+
+      # ---- META (top key: value lines before RESOURCES / NOTES / footer) ----
+      meta_json="$(
+        awk '
+          NR==1 { next }                                   # skip timestamp line
+          /^--- command completed/ { exit }                # stop at footer
+          /^RESOURCES:/ { exit }                           # stop at resources
+          /^NOTES:/ { exit }                               # stop at notes
+          /^[[:space:]]*$/ { next }                        # skip blank
+          {
+            split($0, a, ":")
+            key=a[1]
+            val=substr($0, index($0, ":")+1)
+            sub(/^[[:space:]]+/, "", key)
+            sub(/^[[:space:]]+/, "", val)
+            gsub(/"/, "\\\"", val)
+            printf("{\"%s\":\"%s\"}\n", tolower(key), val)
+          }
+        ' "$f" | "$JQ" -s 'add // {}'
+      )"
+
+      # ---- Deployments table ----
+      deployments_json="$(
+        awk '
+          /^RESOURCES:/ { in_res=1; next }
+          in_res && /^==> .*Deployment/ { in_dep=1; next }
+          in_dep && /^==> / { in_dep=0 }                   # next section
+          in_dep && /^NOTES:/ { in_dep=0 }
+          in_dep {
+            if ($0 ~ /^[[:space:]]*$/) next
+            if ($0 ~ /^NAME[[:space:]]+READY[[:space:]]+UP-TO-DATE[[:space:]]+AVAILABLE[[:space:]]+AGE$/) next
+            name=$1; ready=$2; up=$3; avail=$4; age=$5;
+            if (name != "" && up ~ /^[0-9]+$/ && avail ~ /^[0-9]+$/) {
+              printf("{\"name\":\"%s\",\"ready\":\"%s\",\"up_to_date\":%d,\"available\":%d,\"age\":\"%s\"}\n", name, ready, up, avail, age);
+            }
+          }
+        ' "$f" | "$JQ" -s '.'
+      )"
+      [ -z "${deployments_json:-}" ] && deployments_json='[]'
+
+      # ---- Services table ----
+      services_json="$(
+        awk '
+          /^RESOURCES:/ { in_res=1; next }
+          in_res && /^==> .*Service/ { in_svc=1; next }
+          in_svc && /^==> / { in_svc=0 }
+          in_svc && /^NOTES:/ { in_svc=0 }
+          in_svc {
+            if ($0 ~ /^[[:space:]]*$/) next
+            if ($0 ~ /^NAME[[:space:]]+TYPE[[:space:]]+CLUSTER-IP[[:space:]]+EXTERNAL-IP[[:space:]]+PORT\(S\)[[:space:]]+AGE$/) next
+            name=$1; type=$2; cluster_ip=$3; ext_ip=$4;
+            age=$NF;                                      # last token
+            ports="";
+            for (i=5; i<=NF-1; i++) { ports = (ports=="" ? $i : ports " " $i) }
+            gsub(/"/, "\\\"", ports)
+            if (name != "") {
+              printf("{\"name\":\"%s\",\"type\":\"%s\",\"cluster_ip\":\"%s\",\"external_ip\":\"%s\",\"ports\":\"%s\",\"age\":\"%s\"}\n", name, type, cluster_ip, ext_ip, ports, age);
+            }
+          }
+        ' "$f" | "$JQ" -s '.'
+      )"
+      [ -z "${services_json:-}" ] && services_json='[]'
+
+      # ---- NOTES block (as array of lines) ----
+      notes_json="$(
+        awk '
+          /^NOTES:/ { in_notes=1; next }
+          in_notes {
+            if ($0 ~ /^--- command completed/) { exit }
+            gsub(/"/, "\\\"", $0)
+            print $0
+          }
+        ' "$f" | "$JQ" -R -s 'split("\n") | map(select(length>0))'
+      )"
+      [ -z "${notes_json:-}" ] && notes_json='[]'
+
+      sf="{{ item.path }}"
+      "$JQ" -n \
+        --arg ts "${ts}" \
+        --arg cmd "${cmd}" \
+        --arg sf "${sf}" \
+        --argjson meta "${meta_json}" \
+        --argjson deployments "${deployments_json}" \
+        --argjson services "${services_json}" \
+        --argjson notes "${notes_json}" \
+        '{
+          ts: $ts,
+          command: $cmd,
+          source_file: $sf,
+          release: ($meta.name // null),
+          namespace: ($meta.namespace // null),
+          status: ($meta.status // null),
+          revision: (($meta.revision // null) | tonumber?),
+          chart: ($meta.chart // null),
+          app_version: ($meta["app version"] // null),
+          last_deployed: ($meta["last deployed"] // null),
+          resources: {
+            deployments: $deployments,
+            services: $services
+          },
+          notes: $notes,
+          summary: {
+            deployments: ($deployments | length),
+            services: ($services | length),
+            status: ($meta.status // null)
+          }
+        }'
+  args:
+    executable: /bin/bash
+  loop: "{{ new_helm_status }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: built_helm_status
+  changed_when: false
+
+- name: Append Helm status snapshots to master JSON (in memory)
+  when: (enable_analyzer | default(true)) and (new_helm_status | length > 0)
+  ansible.builtin.set_fact:
+    master_json: >-
+      {{
+        master_json | combine(
+          {
+            'helm': {
+              'statuses': (
+                (master_json.helm.statuses | default([]))
+                + (built_helm_status.results
+                    | map(attribute='stdout')
+                    | map('from_json') | list)
+              )
+            },
+            'updated_at': lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ')
+          },
+          recursive=True
+        )
+      }}

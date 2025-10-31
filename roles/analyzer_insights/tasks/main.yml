@@ -1,0 +1,353 @@
+---
+# analyzer_insights: derive insights and render reports
+
+- name: Ensure report directory exists
+  ansible.builtin.file:
+    path: "{{ report_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Detect jq binary for insights
+  ansible.builtin.shell: |
+    set -e
+    if [ -x /opt/homebrew/bin/jq ]; then
+      echo /opt/homebrew/bin/jq
+    elif command -v jq >/dev/null 2>&1; then
+      command -v jq
+    else
+      echo ""
+    fi
+  args:
+    executable: /bin/bash
+  register: jq_path
+  changed_when: false
+
+- name: Fail if jq is not installed (insights)
+  ansible.builtin.fail:
+    msg: "jq not found. Install with: brew install jq"
+  when: jq_path.stdout == ""
+
+- name: Set jq_bin fact (insights)
+  ansible.builtin.set_fact:
+    jq_bin: "{{ jq_path.stdout }}"
+
+- name: Load master index.json (insights)
+  ansible.builtin.slurp:
+    src: "{{ analysis_output_json }}"
+  register: _idx_b64
+
+- name: Parse master JSON (insights)
+  ansible.builtin.set_fact:
+    idx_json: "{{ (_idx_b64.content | b64decode) | from_json }}"
+
+# ---------- Compute derived insights with jq ----------
+
+- name: Compute K8s latest snapshot + unhealthy pods
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    f="{{ analysis_output_json }}"
+
+    latest_k8s="$(
+      "$JQ" -r '
+        (.kubernetes.snapshots // [])
+        | sort_by(.ts)
+        | last // empty
+      ' "$f"
+    )"
+
+    if [ -z "${latest_k8s}" ]; then
+      "$JQ" -n '{has_k8s:false, latest:null, unhealthy:[]}'
+      exit 0
+    fi
+
+    echo "${latest_k8s}" | "$JQ" --argjson alert_statuses '[{{ insights_alert_on_status | map("tojson") | join(",") }}]' '
+      {
+        has_k8s:true,
+        latest: { ts, namespace: .namespace, summary: .summary },
+        unhealthy: (
+          (.pods // [])
+          | map(
+              . as $p
+              | ($p.ready | capture("(?<a>[0-9]+)/(?<b>[0-9]+)")? ) as $m
+              | .ready_ratio = (
+                  if $m != null and ($m.a|tonumber) == ($m.b|tonumber) then 1.0 else 0.0 end
+                )
+              | .
+            )
+          | map(select(
+              (.status != "Running")
+              or (.ready_ratio < {{ insights_min_ready_ratio | float }})
+              or (.status as $s | $alert_statuses | index($s))
+            ))
+        )
+      }'
+  args:
+    executable: /bin/bash
+  register: k8s_insights
+  changed_when: false
+
+- name: Compute Helm latest list snapshot + problem releases
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    f="{{ analysis_output_json }}"
+
+    latest_helm_list="$(
+      "$JQ" -r '
+        (.helm.lists // [])
+        | sort_by(.ts)
+        | last // empty
+      ' "$f"
+    )"
+
+    if [ -z "${latest_helm_list}" ]; then
+      "$JQ" -n '{has_helm:false, latest:null, bad_releases:[]}'
+      exit 0
+    fi
+
+    echo "${latest_helm_list}" | "$JQ" --argjson bad_statuses '[{{ insights_helm_bad_status | map("tojson") | join(",") }}]' '
+      {
+        has_helm:true,
+        latest: { ts, summary },
+        bad_releases: (
+          (.releases // [])
+          | map(select(.status as $s | $bad_statuses | index($s)))
+        )
+      }'
+  args:
+    executable: /bin/bash
+  register: helm_list_insights
+  changed_when: false
+
+- name: Compute Helm status rollups (per release latest status)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    f="{{ analysis_output_json }}"
+
+    "$JQ" -r '
+      (.helm.statuses // [])
+      | group_by(.release)
+      | map( sort_by(.ts) | last )
+    ' "$f"
+  args:
+    executable: /bin/bash
+  register: helm_status_latest
+  changed_when: false
+
+- name: Compute K8s pod diffs (newest vs previous)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    f="{{ analysis_output_json }}"
+
+    "$JQ" -r '
+      def by_name_select:
+        (.pods // [])
+        | map({key:.name, value:{ready, status, restarts, age}})
+        | from_entries;
+
+      (.kubernetes.snapshots // [])
+      | sort_by(.ts)
+      | (.[-2:] // [])
+      | if length < 2 then
+          {}
+        else
+          {prev: .[0], curr: .[1]} as $pair
+          | ($pair.prev | by_name_select) as $P
+          | ($pair.curr | by_name_select) as $C
+          | ($C|keys) as $ck
+          | ($P|keys) as $pk
+          | {
+              prev_ts: $pair.prev.ts,
+              curr_ts: $pair.curr.ts,
+              added:   ($ck - $pk),
+              removed: ($pk - $ck),
+              changed: (
+                [ ($ck[] | select( ($P[.]? != null) and ($C[.] != $P[.]) )) ]
+              ),
+              changes_detail: (
+                [ ($ck[] | select( ($P[.]? != null) and ($C[.] != $P[.]) )) ]
+                | map({ name: .,
+                        prev: $P[.],
+                        curr: $C[.] })
+              )
+            }
+        end
+    ' "$f"
+  args:
+    executable: /bin/bash
+  register: _k8s_pod_diffs
+  changed_when: false
+
+- name: Save K8s pod diffs fact
+  ansible.builtin.set_fact:
+    k8s_pod_diffs: "{{ (_k8s_pod_diffs.stdout | default('{}')) | from_json }}"
+
+# --- Use a temp file jq program to avoid YAML/Jinja quoting issues
+- name: Compute Helm list diffs (releases) between newest and previous snapshot
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      JQ="{{ jq_bin }}"
+      f="{{ analysis_output_json }}"
+
+      TMP="$(mktemp)"
+      cat > "$TMP" <<'JQ'
+      def key(r): "\((r.name)//"")@\((r.namespace)//"")";
+      def slim(r): { status: r.status, chart: r.chart, app_version: r.app_version, revision: r.revision };
+
+      (.helm.lists // [])
+      | sort_by(.ts)
+      | (.[-2:] // [])
+      | if length < 2 then
+          {}
+        else
+          {prev: .[0], curr: .[1]} as $pair
+          | ($pair.prev.releases // []) as $PR
+          | ($pair.curr.releases // []) as $CR
+          | ($PR | map({key: key(.), value: slim(.)}) | from_entries) as $P
+          | ($CR | map({key: key(.), value: slim(.)}) | from_entries) as $C
+          | ($C|keys) as $ck
+          | ($P|keys) as $pk
+          | {
+              prev_ts: $pair.prev.ts,
+              curr_ts: $pair.curr.ts,
+              added:   [ ($ck - $pk)[] | {key: ., value: $C[.] } ],
+              removed: [ ($pk - $ck)[] | {key: ., value: $P[.] } ],
+              changed: (
+                [ ($ck[] | select( ($P[.]? != null) and ($C[.] != $P[.]) )) ]
+              )
+            }
+        end
+      JQ
+
+      "$JQ" -r -f "$TMP" "$f"
+      rm -f "$TMP"
+  args:
+    executable: /bin/bash
+  register: helm_list_diff
+  changed_when: false
+
+# --- NEW: Safely parse Helm list diff JSON once, for reuse
+- name: Parse Helm list diff JSON safely
+  ansible.builtin.set_fact:
+    helm_list_diff_parsed: >-
+      {{
+        (
+          (helm_list_diff.stdout | default('')) | length > 0
+        )
+        | ternary((helm_list_diff.stdout | from_json), {})
+      }}
+
+# ---------- Persist machine-readable alerts ----------
+
+- name: Build alerts.json (actionable items)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    printf '%s\n' \
+      '{{ k8s_insights.stdout }}' \
+      '{{ helm_list_insights.stdout }}' \
+      '{{ helm_status_latest.stdout }}' \
+      '{{ k8s_pod_diffs | to_json }}' \
+      '{{ helm_list_diff.stdout }}' \
+    | "$JQ" -s '
+      {
+        k8s: (.[0] // {}),
+        helm_list: (.[1] // {}),
+        helm_status_latest: (.[2] // []),
+        k8s_diff: (.[3] // {}),
+        helm_list_diff: (.[4] // {})
+      }
+    ' > "{{ report_dir }}/alerts.json"
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+# ---------- Render Markdown report ----------
+
+- name: Compute report timestamp (UTC, human readable)
+  ansible.builtin.shell: |
+    set -e
+    date -u +%Y-%m-%d\ %H:%M:%SZ
+  args:
+    executable: /bin/bash
+  register: report_ts_human
+  changed_when: false
+
+- name: Compute report timestamp (UTC, filename-safe)
+  ansible.builtin.shell: |
+    set -e
+    date -u +%Y-%m-%dT%H-%M-%SZ
+  args:
+    executable: /bin/bash
+  register: report_ts_utc
+  changed_when: false
+
+- name: Render insights report (Markdown)
+  ansible.builtin.template:
+    src: report.md.j2
+    dest: "{{ report_dir }}/report-{{ report_ts_utc.stdout }}.md"
+    mode: "0600"
+  vars:
+    generated_at_utc: "{{ report_ts_human.stdout }}"
+    insights:
+      k8s: "{{ k8s_insights.stdout | from_json }}"
+      helm_list: "{{ helm_list_insights.stdout | from_json }}"
+      helm_status_latest: "{{ helm_status_latest.stdout | from_json }}"
+      k8s_diff: "{{ k8s_pod_diffs }}"
+      helm_list_diff: "{{ helm_list_diff_parsed }}"
+
+- name: Find latest report filename
+  ansible.builtin.shell: |
+    set -e
+    ls -1t "{{ report_dir }}"/*.md | head -n1
+  args:
+    executable: /bin/bash
+  register: latest_report_path
+  changed_when: false
+
+- name: Write/refresh latest.md convenience copy
+  when: latest_report_path.stdout is defined and (latest_report_path.stdout | length) > 0
+  ansible.builtin.copy:
+    dest: "{{ report_dir }}/latest.md"
+    content: "{{ lookup('file', latest_report_path.stdout) }}"
+    mode: "0600"
+
+# Compute filename-safe timestamp (ISO, UTC) for both MD and HTML
+- name: Compute report timestamp (UTC, filename-safe)
+  ansible.builtin.shell: |
+    set -e
+    date -u +%Y-%m-%dT%H-%M-%SZ
+  args:
+    executable: /bin/bash
+  register: report_ts_iso
+  changed_when: false
+
+# If you already computed this earlier, keep only one copy and reuse it in both renders.
+
+# Render HTML dashboard
+- name: Render insights dashboard (HTML)
+  ansible.builtin.template:
+    src: report.html.j2
+    dest: "{{ report_dir }}/report-{{ report_ts_iso.stdout }}.html"
+    mode: "0600"
+  vars:
+    generated_at_utc: "{{ report_ts_human.stdout }}"
+    insights:
+      k8s: "{{ k8s_insights.stdout | from_json }}"
+      helm_list: "{{ helm_list_insights.stdout | from_json }}"
+      helm_status_latest: "{{ helm_status_latest.stdout | from_json }}"
+      k8s_diff: "{{ k8s_pod_diffs }}"
+      helm_list_diff: >-
+        {{ (helm_list_diff.stdout is defined and (helm_list_diff.stdout | length) > 0)
+           | ternary((helm_list_diff.stdout | from_json), {}) }}
+
+# Write/refresh latest.html convenience copy
+- name: Write/refresh latest.html convenience copy
+  ansible.builtin.copy:
+    dest: "{{ report_dir }}/latest.html"
+    content: "{{ lookup('file', (report_dir + '/' + 'report-' + report_ts_iso.stdout + '.html')) }}"
+    mode: "0600"

@@ -1,0 +1,83 @@
+---
+# Enable + directories
+- name: Ensure log directory exists
+  when: enable_analyzer | default(true)
+  ansible.builtin.file:
+    path: "{{ log_dir }}"
+    state: directory
+    mode: "0700"
+
+# Initialize master JSON on first run (includes helm + k8s sections)
+- name: Initialize master JSON if missing
+  when: enable_analyzer | default(true)
+  ansible.builtin.copy:
+    dest: "{{ analysis_output_json }}"
+    content: |
+      {
+        "schema_version": "1.0",
+        "updated_at": "{{ lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ') }}",
+        "kubernetes": { "snapshots": [] },
+        "helm": { "histories": [], "lists": [], "statuses": [] }
+      }
+    mode: "0600"
+    force: false
+
+# Load + parse
+- name: Load master JSON
+  when: enable_analyzer | default(true)
+  ansible.builtin.slurp:
+    src: "{{ analysis_output_json }}"
+  register: _master_json_b64
+
+- name: Parse master JSON
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    master_json: "{{ (_master_json_b64.content | b64decode) | from_json }}"
+
+# Ensure arrays exist (for back-compat)
+- name: Ensure required arrays exist
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    master_json: >-
+      {{
+        master_json
+        | combine(
+            { 'kubernetes': {
+                'snapshots': (master_json.kubernetes.snapshots | default([]))
+              }},
+            recursive=True
+          )
+        | combine(
+            { 'helm': {
+                'histories': (master_json.helm.histories | default([])),
+                'lists':     (master_json.helm.lists     | default([])),
+                'statuses':  (master_json.helm.statuses  | default([]))
+              }},
+            recursive=True
+          )
+      }}
+
+# jq detection (used by all parsers)
+- name: Detect jq binary
+  ansible.builtin.shell: |
+    set -e
+    if [ -x /opt/homebrew/bin/jq ]; then
+      echo /opt/homebrew/bin/jq
+    elif command -v jq >/dev/null 2>&1; then
+      command -v jq
+    else
+      echo ""
+    fi
+  args:
+    executable: /bin/bash
+  register: jq_path
+  changed_when: false
+
+- name: Fail if jq is not installed
+  ansible.builtin.fail:
+    msg: "jq not found. Install with: brew install jq"
+  when: jq_path.stdout == ""
+
+- name: Set jq_bin fact
+  ansible.builtin.set_fact:
+    jq_bin: "{{ jq_path.stdout }}"

@@ -1,0 +1,35 @@
+---
+# Orchestrator: call modular task files
+
+- name: "Bootstrap analyzer (init/load master JSON, ensure arrays, detect jq)"
+  ansible.builtin.include_tasks: bootstrap.yml
+
+# Kubernetes ingestion
+- name: "Kubernetes: find candidate files"
+  ansible.builtin.include_tasks: k8s_find.yml
+
+- name: "Kubernetes: build snapshots and append"
+  ansible.builtin.include_tasks: k8s_build.yml
+
+# Helm ingestion
+- name: "Helm: find candidate files"
+  ansible.builtin.include_tasks: helm_find.yml
+
+- name: "Helm: build snapshots and append"
+  ansible.builtin.include_tasks: helm_build.yml
+
+- name: "Helm: find list -A files"
+  ansible.builtin.include_tasks: helm_list_find.yml
+
+- name: "Helm: build list -A snapshots and append"
+  ansible.builtin.include_tasks: helm_list_build.yml
+
+- name: "Helm: find status files"
+  ansible.builtin.include_tasks: helm_status_find.yml
+
+- name: "Helm: build status snapshots and append"
+  ansible.builtin.include_tasks: helm_status_build.yml
+
+# Persist changes
+- name: "Persist updated master JSON"
+  ansible.builtin.include_tasks: persist.yml

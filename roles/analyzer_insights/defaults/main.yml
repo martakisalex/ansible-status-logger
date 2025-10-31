@@ -1,0 +1,25 @@
+---
+# Where the master index.json lives (already set in your other role)
+analysis_output_json: "{{ log_dir }}/index.json"
+
+# Where to emit human/machine reports
+report_dir: "{{ log_dir }}/reports"
+
+# Basic thresholds
+insights_min_ready_ratio: 1.0           # require READY to equal containers (e.g., 1/1, 3/3)
+insights_alert_on_status:               # non-running pod statuses that should alert
+  - CrashLoopBackOff
+  - Error
+  - OOMKilled
+  - Terminating
+  - Pending
+  - Failed
+insights_helm_bad_status:
+  - failed
+  - pending-install
+  - pending-upgrade
+  - pending-rollback
+
+# Limit for diffing: compare the newest and previous snapshots
+insights_compare_k8s_snapshots: 2
+insights_compare_helm_lists: 2

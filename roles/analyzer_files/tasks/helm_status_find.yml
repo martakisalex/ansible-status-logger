@@ -1,0 +1,40 @@
+---
+- name: Check helm subdir (for status)
+  when: enable_analyzer | default(true)
+  ansible.builtin.stat:
+    path: "{{ log_dir }}/helm"
+  register: helm_dir_for_status
+
+- name: Find helm status TXT files
+  when: (enable_analyzer | default(true)) and (helm_dir_for_status.stat.exists)
+  ansible.builtin.find:
+    paths: "{{ log_dir }}/helm"
+    patterns: ["helm-status-*.txt"]
+    file_type: file
+    recurse: false
+  register: found_helm_status
+
+- name: Derive already indexed Helm status files
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    already_indexed_helm_status: >-
+      {{
+        (master_json.helm.statuses | default([]))
+        | map(attribute='source_file') | list
+      }}
+
+- name: Filter new Helm status TXT files
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    new_helm_status: >-
+      {{
+        (found_helm_status.files | default([]))
+        | selectattr('path', 'defined')
+        | rejectattr('path', 'in', already_indexed_helm_status | default([]))
+        | list
+      }}
+
+- name: No new helm status files to index
+  when: (enable_analyzer | default(true)) and (new_helm_status | length == 0)
+  ansible.builtin.debug:
+    msg: "No new helm status files to index."

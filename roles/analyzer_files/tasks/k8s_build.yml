@@ -1,0 +1,77 @@
+---
+- name: Build full snapshot JSON (pods + summary) for each new K8s TXT
+  when: (enable_analyzer | default(true)) and (new_txt_files | length > 0)
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    f="{{ item.path }}"
+    export LC_ALL=C
+
+    first="$(head -n 1 "$f" | tr -d '\r')"
+    ts="$(printf "%s\n" "$first" | sed -n 's/^\[\(.*Z\)\].*$/\1/p')"
+    cmd="$(printf "%s\n" "$first" | sed -n 's/^.*Running: \(.*\)$/\1/p')"
+    ns="$(printf "%s\n" "$cmd" | awk '{for (i=1;i<=NF;i++) if ($i=="-n") {print $(i+1); exit}}')"
+
+    pods_json="$(
+      awk '
+        NR==1 { next }
+        /^NAMESPACE[[:space:]]+NAME/ { next }
+        /^--- / { next }
+        /^[[:space:]]*$/ { next }
+        { if (NF >= 6) {
+            ns=$1; name=$2; ready=$3; status=$4; restarts=$5; age=$6;
+            if (restarts ~ /^[0-9]+$/) {
+              printf("{\"name\":\"%s\",\"ready\":\"%s\",\"status\":\"%s\",\"restarts\":%d,\"age\":\"%s\"}\n",
+                     name, ready, status, restarts, age);
+            }
+          }
+        }
+      ' "$f" | "$JQ" -s '.'
+    )"
+
+    [ -z "${pods_json:-}" ] && pods_json='[]'
+
+    total="$(printf "%s" "${pods_json}" | "$JQ" 'length')"
+    by_status="$(printf "%s" "${pods_json}" | "$JQ" 'group_by(.status) | map({ (.[0].status): length }) | add // {}')"
+    ns_json="$( [ -z "${ns:-}" ] && echo null || printf "%s" "$ns" | "$JQ" -R '.')"
+    sf="{{ item.path }}"
+
+    "$JQ" -n \
+      --arg ts "${ts}" \
+      --arg cmd "${cmd}" \
+      --arg sf "${sf}" \
+      --argjson ns ${ns_json} \
+      --argjson by_status "${by_status}" \
+      --argjson total "${total}" \
+      --argjson pods "${pods_json}" \
+      '{ ts: $ts, command: $cmd, namespace: $ns, source_file: $sf,
+         summary: { total_pods: $total, by_status: $by_status }, pods: $pods }'
+  args:
+    executable: /bin/bash
+  loop: "{{ new_txt_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: built_full_snapshots
+  changed_when: false
+
+- name: Append new K8s snapshots to master JSON (in memory)
+  when: (enable_analyzer | default(true)) and (new_txt_files | length > 0)
+  ansible.builtin.set_fact:
+    master_json: >-
+      {{
+        master_json | combine(
+          {
+            'kubernetes': {
+              'snapshots': (
+                 (master_json.kubernetes.snapshots | default([]))
+                 + (built_full_snapshots.results
+                      | map(attribute='stdout')
+                      | map('from_json') | list)
+               )
+            },
+            'updated_at': lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ')
+          },
+          recursive=True
+        )
+      }}

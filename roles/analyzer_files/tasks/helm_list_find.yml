@@ -1,0 +1,40 @@
+---
+- name: Check helm subdir (for list -A)
+  when: enable_analyzer | default(true)
+  ansible.builtin.stat:
+    path: "{{ log_dir }}/helm"
+  register: helm_dir_for_list
+
+- name: Find helm list TXT files
+  when: (enable_analyzer | default(true)) and (helm_dir_for_list.stat.exists)
+  ansible.builtin.find:
+    paths: "{{ log_dir }}/helm"
+    patterns: ["helm-list-*.txt"]
+    file_type: file
+    recurse: false
+  register: found_helm_list
+
+- name: Derive already indexed Helm list files
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    already_indexed_helm_list: >-
+      {{
+        (master_json.helm.lists | default([]))
+        | map(attribute='source_file') | list
+      }}
+
+- name: Filter new Helm list TXT files
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    new_helm_list: >-
+      {{
+        (found_helm_list.files | default([]))
+        | selectattr('path', 'defined')
+        | rejectattr('path', 'in', already_indexed_helm_list | default([]))
+        | list
+      }}
+
+- name: No new helm list files to index
+  when: (enable_analyzer | default(true)) and (new_helm_list | length == 0)
+  ansible.builtin.debug:
+    msg: "No new helm list -A files to index."

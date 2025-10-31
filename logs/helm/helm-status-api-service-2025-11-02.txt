@@ -1,0 +1,20 @@
+[2025-11-02T18:05:00Z] Running: helm status api-service -n application
+NAME: api-service
+LAST DEPLOYED: Sun Nov  2 10:15:47 2025
+NAMESPACE: application
+STATUS: deployed
+REVISION: 13
+CHART: api-service-2.3.2
+APP VERSION: 2.3.2
+RESOURCES:
+==> v1/Deployment
+NAME            READY   UP-TO-DATE   AVAILABLE   AGE
+api-service     2/3     3            2           7d18h
+
+==> v1/Service
+NAME            TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+api-service     ClusterIP   10.96.212.34    <none>        80/TCP    7d18h
+
+NOTES:
+Warning: One pod not ready (api-service-6b8d4c7f8d-9kkqp). Investigate restart loop.
+--- command completed successfully ---

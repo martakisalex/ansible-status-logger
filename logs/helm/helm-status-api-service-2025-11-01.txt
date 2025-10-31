@@ -1,0 +1,20 @@
+[2025-11-01T18:05:00Z] Running: helm status api-service -n application
+NAME: api-service
+LAST DEPLOYED: Sat Nov  1 12:57:21 2025
+NAMESPACE: application
+STATUS: deployed
+REVISION: 12
+CHART: api-service-2.3.1
+APP VERSION: 2.3.1
+RESOURCES:
+==> v1/Deployment
+NAME            READY   UP-TO-DATE   AVAILABLE   AGE
+api-service     3/3     3            3           6d18h
+
+==> v1/Service
+NAME            TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+api-service     ClusterIP   10.96.212.34    <none>        80/TCP    6d18h
+
+NOTES:
+Upgrade successful. API latency reduced by ~15 %.
+--- command completed successfully ---

@@ -1,0 +1,92 @@
+---
+- name: Build Helm history snapshots (revisions + summary)
+  when: (enable_analyzer | default(true)) and (new_helm_history | length > 0)
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    f="{{ item.path }}"
+    export LC_ALL=C
+
+    first="$(head -n 1 "$f" | tr -d '\r')"
+    ts="$(printf "%s\n" "$first" | sed -n 's/^\[\(.*Z\)\].*$/\1/p')"
+    cmd="$(printf "%s\n" "$first" | sed -n 's/^.*Running: \(.*\)$/\1/p')"
+    rel="$(printf "%s\n" "$cmd" | awk '{for (i=1;i<=NF;i++) if ($i=="history"){print $(i+1); exit}}')"
+    ns="$(printf "%s\n" "$cmd" | awk '{for (i=1;i<=NF;i++) if ($i=="-n") {print $(i+1); exit}}')"
+
+    revs_json="$(
+      awk '
+        NR==1 { next }
+        /^REVISION[[:space:]]+UPDATED/ { next }
+        /^--- / { next }
+        /^[[:space:]]*$/ { next }
+        {
+          if (NF >= 7) {
+            rev=$1; d=$2; t=$3; status=$4; chart=$5; appv=$6;
+            idx = index($0, appv) + length(appv) + 1;
+            desc = substr($0, idx);
+            if (rev ~ /^[0-9]+$/) {
+              gsub(/\\/,"\\\\",desc); gsub(/"/,"\\\"",desc);
+              printf("{\"rev\":%d,\"updated\":\"%s %s\",\"status\":\"%s\",\"chart\":\"%s\",\"app_version\":\"%s\",\"desc\":\"%s\"}\n",
+                     rev, d, t, status, chart, appv, desc);
+            }
+          }
+        }
+      ' "$f" | "$JQ" -s '.'
+    )"
+
+    [ -z "${revs_json:-}" ] && revs_json='[]'
+
+    total="$(printf "%s" "${revs_json}" | "$JQ" 'length')"
+    deployed_rev="$(printf "%s" "${revs_json}" | "$JQ" '[.[] | select(.status=="deployed")][-1].rev // null')"
+    current_chart="$(printf "%s" "${revs_json}" | "$JQ" '[.[] | select(.status=="deployed")][-1].chart // null')"
+    app_version="$(printf "%s" "${revs_json}" | "$JQ" '[.[] | select(.status=="deployed")][-1].app_version // null')"
+
+    ns_json="$( [ -z "${ns:-}" ] && echo null || printf "%s" "$ns" | "$JQ" -R '.')"
+    rel_json="$( [ -z "${rel:-}" ] && echo null || printf "%s" "$rel" | "$JQ" -R '.')"
+
+    sf="{{ item.path }}"
+
+    "$JQ" -n \
+      --arg ts "${ts}" \
+      --arg cmd "${cmd}" \
+      --arg sf "${sf}" \
+      --argjson ns ${ns_json} \
+      --argjson release ${rel_json} \
+      --argjson revisions "${revs_json}" \
+      --argjson total "${total}" \
+      --argjson deployed_rev "${deployed_rev}" \
+      --argjson current_chart "${current_chart}" \
+      --argjson app_version "${app_version}" \
+      '{ ts: $ts, command: $cmd, namespace: $ns, release: $release, source_file: $sf,
+         summary: { total_revisions: $total, deployed_rev: $deployed_rev,
+                    current_chart: $current_chart, app_version: $app_version },
+         revisions: $revisions }'
+  args:
+    executable: /bin/bash
+  loop: "{{ new_helm_history }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: built_helm_history
+  changed_when: false
+
+- name: Append Helm history snapshots to master JSON (in memory)
+  when: (enable_analyzer | default(true)) and (new_helm_history | length > 0)
+  ansible.builtin.set_fact:
+    master_json: >-
+      {{
+        master_json | combine(
+          {
+            'helm': {
+              'histories': (
+                (master_json.helm.histories | default([]))
+                + (built_helm_history.results
+                    | map(attribute='stdout')
+                    | map('from_json') | list)
+              )
+            },
+            'updated_at': lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ')
+          },
+          recursive=True
+        )
+      }}

@@ -1,0 +1,105 @@
+---
+- name: Build Helm list -A snapshots (releases + summary)
+  when: (enable_analyzer | default(true)) and (new_helm_list | length > 0)
+  no_log: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    JQ="{{ jq_bin }}"
+    f="{{ item.path }}"
+    export LC_ALL=C
+
+    # First line looks like: [ISO] Running: helm list -A
+    first="$(head -n 1 "$f" | tr -d '\r')"
+    ts="$(printf "%s\n" "$first" | sed -n 's/^\[\(.*Z\)\].*$/\1/p')"
+    cmd="$(printf "%s\n" "$first" | sed -n 's/^.*Running: \(.*\)$/\1/p')"
+
+    # Parse table rows:
+    # NAME  NAMESPACE  REVISION  UPDATED  STATUS  CHART  APP VERSION
+    releases_json="$(
+      awk '
+        NR==1 { next }                                    # skip timestamp line
+        /^NAME[[:space:]]+NAMESPACE[[:space:]]+REVISION/ { next } # skip header
+        /^--- / { next }                                  # skip footer
+        /^[[:space:]]*$/ { next }                         # skip blank
+        {
+          # We expect at least 7 fields, but UPDATED itself has spaces/timezone.
+          # Approach: capture fixed columns first, then rebuild UPDATED from the middle.
+          # Columns (tokens):
+          # 1:NAME  2:NAMESPACE  3:REVISION  then UPDATED (4..N-3)  (N-2):STATUS (N-1):CHART (N):APP_VERSION
+          if (NF >= 7) {
+            name=$1; ns=$2; rev=$3;
+            status=$(NF-2); chart=$(NF-1); appv=$NF;
+
+            # Reconstruct UPDATED from fields 4 .. (NF-3)
+            updated="";
+            for (i=4; i<=NF-3; i++) {
+              updated = (updated == "" ? $i : updated " " $i);
+            }
+
+            # Basic sanity: revision must be integer
+            if (rev ~ /^[0-9]+$/) {
+              # escape json
+              gsub(/\\/,"\\\\",updated); gsub(/"/,"\\\"",updated);
+              printf("{\"name\":\"%s\",\"namespace\":\"%s\",\"revision\":%d,\"updated\":\"%s\",\"status\":\"%s\",\"chart\":\"%s\",\"app_version\":\"%s\"}\n",
+                     name, ns, rev, updated, status, chart, appv);
+            }
+          }
+        }
+      ' "$f" | "$JQ" -s '.'
+    )"
+
+    [ -z "${releases_json:-}" ] && releases_json='[]'
+
+    total="$(printf "%s" "${releases_json}" | "$JQ" 'length')"
+    by_status="$(printf "%s" "${releases_json}" | "$JQ" 'group_by(.status) | map({ (.[0].status): length }) | add // {}')"
+    by_namespace="$(printf "%s" "${releases_json}" | "$JQ" 'group_by(.namespace) | map({ (.[0].namespace): length }) | add // {}')"
+
+    sf="{{ item.path }}"
+
+    "$JQ" -n \
+      --arg ts "${ts}" \
+      --arg cmd "${cmd}" \
+      --arg sf "${sf}" \
+      --argjson releases "${releases_json}" \
+      --argjson total "${total}" \
+      --argjson by_status "${by_status}" \
+      --argjson by_namespace "${by_namespace}" \
+      '{
+        ts: $ts,
+        command: $cmd,
+        source_file: $sf,
+        summary: {
+          total_releases: $total,
+          by_status: $by_status,
+          by_namespace: $by_namespace
+        },
+        releases: $releases
+      }'
+  args:
+    executable: /bin/bash
+  loop: "{{ new_helm_list }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: built_helm_list
+  changed_when: false
+
+- name: Append Helm list snapshots to master JSON (in memory)
+  when: (enable_analyzer | default(true)) and (new_helm_list | length > 0)
+  ansible.builtin.set_fact:
+    master_json: >-
+      {{
+        master_json | combine(
+          {
+            'helm': {
+              'lists': (
+                (master_json.helm.lists | default([]))
+                + (built_helm_list.results
+                    | map(attribute='stdout')
+                    | map('from_json') | list)
+              )
+            },
+            'updated_at': lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ')
+          },
+          recursive=True
+        )
+      }}

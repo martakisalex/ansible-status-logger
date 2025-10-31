@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Cluster Health Report — {{ generated_at_utc }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0e0f12; --card:#15171c; --muted:#c9c9cf; --ink:#f5f7fb;
+      --ok:#1f7a1f; --warn:#b58b00; --bad:#b91c1c; --unknown:#5a5f6b;
+      --chip:#1e2127; --border:#2a2f39; --accent:#3b82f6;
+    }
+    *{box-sizing:border-box}
+    body{margin:20px;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    h1{margin:0 0 6px;font-size:22px}
+    .sub{color:var(--muted);margin:0 0 16px}
+    .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
+    h2{margin:0 0 10px;font-size:16px}
+    h3{margin:16px 0 8px;font-size:14px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.02em}
+    .kvs{display:flex;flex-wrap:wrap;gap:8px}
+    .kv{background:var(--chip);border:1px solid var(--border);border-radius:10px;padding:8px 10px}
+    .kv b{color:var(--muted);margin-right:6px}
+    table{width:100%;border-collapse:separate;border-spacing:0 6px}
+    th,td{padding:8px 10px;text-align:left;vertical-align:top}
+    th{color:var(--muted);font-weight:600}
+    tr{background:var(--chip);border:1px solid var(--border)}
+    tr td:first-child, tr th:first-child{border-top-left-radius:10px;border-bottom-left-radius:10px}
+    tr td:last-child, tr th:last-child{border-top-right-radius:10px;border-bottom-right-radius:10px}
+    .chip{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--border);font-size:12px}
+    .ok{background:color-mix(in srgb, var(--ok) 18%, transparent);border-color:color-mix(in srgb, var(--ok) 40%, var(--border));color:#d9ffe0}
+    .warn{background:color-mix(in srgb, var(--warn) 18%, transparent);border-color:color-mix(in srgb, var(--warn) 40%, var(--border));color:#fff3c8}
+    .bad{background:color-mix(in srgb, var(--bad) 18%, transparent);border-color:color-mix(in srgb, var(--bad) 40%, var(--border));color:#ffd7d7}
+    .unknown{background:color-mix(in srgb, var(--unknown) 18%, transparent);border-color:color-mix(in srgb, var(--unknown) 40%, var(--border));color:#e7e9f1}
+    .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    .mono{font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .muted{color:var(--muted)}
+    .note{white-space:pre-wrap}
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cluster Health Report</h1>
+    <p class="sub">Generated at <span class="mono">{{ generated_at_utc }}</span></p>
+    <div class="legend">
+      <span class="chip ok">OK</span>
+      <span class="chip warn">Warning</span>
+      <span class="chip bad">Error</span>
+      <span class="chip unknown">Unknown</span>
+    </div>
+  </header>
+
+  {# ---------- helpers ---------- #}
+  {% macro helm_status_class(s) -%}
+    {%- set x = (s or '') | lower -%}
+    {%- if x in ['deployed','success'] -%}ok
+    {%- elif x in ['pending','pending-install','pending-upgrade','pending-rollback'] -%}warn
+    {%- elif x in ['failed','superseded','uninstalled'] -%}bad
+    {%- else -%}unknown
+    {%- endif -%}
+  {%- endmacro %}
+
+  {% macro pod_status_class(status) -%}
+    {%- set x = (status or '') | lower -%}
+    {%- if x == 'running' -%}ok
+    {%- elif x in ['completed','terminating'] -%}warn
+    {%- elif x in ['error','crashloopbackoff','imagepullbackoff','oomkilled','failed'] -%}bad
+    {%- else -%}unknown
+    {%- endif -%}
+  {%- endmacro %}
+
+  <section class="grid">
+
+    <!-- Kubernetes summary -->
+    <div class="card">
+      <h2>Kubernetes — Latest Snapshot</h2>
+      {% set k = insights.k8s or {} %}
+      {% if k.has_k8s %}
+        <div class="kvs">
+          <span class="kv"><b>Timestamp</b> <span class="mono">{{ k.latest.ts }}</span></span>
+          {% if k.latest.summary %}
+            <span class="kv"><b>Total pods</b> {{ k.latest.summary.total_pods }}</span>
+            {% if k.latest.summary.by_status %}
+              {% for s,c in k.latest.summary.by_status.items() %}
+                <span class="kv"><b>{{ s }}</b> {{ c }}</span>
+              {% endfor %}
+            {% endif %}
+          {% endif %}
+        </div>
+
+        <h3>Unhealthy Pods</h3>
+        {% if k.unhealthy | length == 0 %}
+          <p class="muted">No unhealthy pods detected.</p>
+        {% else %}
+          <table>
+            <thead>
+              <tr>
+                <th>Pod</th><th>Status</th><th>Ready</th><th>Restarts</th><th>Age</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in k.unhealthy %}
+                <tr>
+                  <td class="mono">{{ p.name }}</td>
+                  <td><span class="chip {{ pod_status_class(p.status) }}">{{ p.status }}</span></td>
+                  <td class="mono">{{ p.ready }}</td>
+                  <td class="mono">{{ p.restarts }}</td>
+                  <td class="mono">{{ p.age }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      {% else %}
+        <p class="muted">No Kubernetes data available.</p>
+      {% endif %}
+    </div>
+
+    <!-- Helm list summary -->
+    <div class="card">
+      <h2>Helm — Latest Release List</h2>
+      {% set hl = insights.helm_list or {} %}
+      {% if hl.has_helm %}
+        <div class="kvs">
+          <span class="kv"><b>Timestamp</b> <span class="mono">{{ hl.latest.ts }}</span></span>
+          {% if hl.latest.summary %}
+            <span class="kv"><b>Total releases</b> {{ hl.latest.summary.total_releases }}</span>
+            {% if hl.latest.summary.by_status %}
+              {% for s,c in hl.latest.summary.by_status.items() %}
+                <span class="kv"><b>{{ s }}</b> {{ c }}</span>
+              {% endfor %}
+            {% endif %}
+          {% endif %}
+        </div>
+
+        <h3>Problem Releases</h3>
+        {% if hl.bad_releases | length == 0 %}
+          <p class="muted">No problem releases detected.</p>
+        {% else %}
+          <table>
+            <thead><tr><th>Release</th><th>Namespace</th><th>Status</th><th>Chart</th><th>App</th><th>Rev</th></tr></thead>
+            <tbody>
+              {% for r in hl.bad_releases %}
+                <tr>
+                  <td class="mono">{{ r.name }}</td>
+                  <td class="mono">{{ r.namespace }}</td>
+                  <td><span class="chip {{ helm_status_class(r.status) }}">{{ r.status }}</span></td>
+                  <td class="mono">{{ r.chart }}</td>
+                  <td class="mono">{{ r.app_version }}</td>
+                  <td class="mono">{{ r.revision }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      {% else %}
+        <p class="muted">No Helm list data available.</p>
+      {% endif %}
+    </div>
+
+    <!-- Helm latest statuses (per release) -->
+    <div class="card">
+      <h2>Helm — Latest Status Per Release</h2>
+      {% set hs = insights.helm_status_latest or [] %}
+      {% if hs | length == 0 %}
+        <p class="muted">No Helm status snapshots available.</p>
+      {% else %}
+        <table>
+          <thead><tr><th>Release</th><th>Namespace</th><th>Status</th><th>Chart</th><th>App</th><th>Rev</th><th>Last Deployed</th></tr></thead>
+          <tbody>
+            {% for s in hs %}
+              <tr>
+                <td class="mono">{{ s.release }}</td>
+                <td class="mono">{{ s.namespace }}</td>
+                <td><span class="chip {{ helm_status_class(s.status) }}">{{ s.status }}</span></td>
+                <td class="mono">{{ s.chart }}</td>
+                <td class="mono">{{ s.app_version }}</td>
+                <td class="mono">{{ s.revision }}</td>
+                <td class="mono">{{ s.last_deployed }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </div>
+
+    <!-- Diffs -->
+    <div class="card">
+      <h2>Changes Since Previous Snapshot</h2>
+
+      <h3>K8s Pods</h3>
+      {% set kd = insights.k8s_diff or {} %}
+      {% if kd.prev_ts and kd.curr_ts %}
+        <p class="muted">Between <span class="mono">{{ kd.prev_ts }}</span> and <span class="mono">{{ kd.curr_ts }}</span></p>
+      {% endif %}
+      <div class="kvs">
+        <span class="kv"><b>Added</b> {{ (kd.added or []) | length }}</span>
+        <span class="kv"><b>Removed</b> {{ (kd.removed or []) | length }}</span>
+        <span class="kv"><b>Changed</b> {{ (kd.changed or []) | length }}</span>
+      </div>
+      {% if (kd.added or []) | length > 0 %}
+        <h3>Added Pods</h3>
+        <ul>
+          {% for n in kd.added %}<li class="mono">{{ n }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+      {% if (kd.removed or []) | length > 0 %}
+        <h3>Removed Pods</h3>
+        <ul>
+          {% for n in kd.removed %}<li class="mono">{{ n }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+      {% if (kd.changes_detail or []) | length > 0 %}
+        <h3>Changed Pods</h3>
+        <table>
+          <thead><tr><th>Pod</th><th>Prev</th><th>Curr</th></tr></thead>
+          <tbody>
+          {% for c in kd.changes_detail %}
+            <tr>
+              <td class="mono">{{ c.name }}</td>
+              <td class="mono">{{ c.prev }}</td>
+              <td class="mono">{{ c.curr }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      <h3>Helm Releases</h3>
+      {% set hd = insights.helm_list_diff or {} %}
+      {% if hd.prev_ts and hd.curr_ts %}
+        <p class="muted">Between <span class="mono">{{ hd.prev_ts }}</span> and <span class="mono">{{ hd.curr_ts }}</span></p>
+      {% endif %}
+      <div class="kvs">
+        <span class="kv"><b>Added</b> {{ (hd.added or []) | length }}</span>
+        <span class="kv"><b>Removed</b> {{ (hd.removed or []) | length }}</span>
+        <span class="kv"><b>Changed</b> {{ (hd.changed or []) | length }}</span>
+      </div>
+
+      {% if (hd.added or []) | length > 0 %}
+        <h3>Added Releases</h3>
+        <table>
+          <thead><tr><th>Key</th><th>Details</th></tr></thead>
+          <tbody>
+            {% for a in hd.added %}
+              <tr>
+                <td class="mono">{{ a.key }}</td>
+                <td class="mono">{{ a.value }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      {% if (hd.removed or []) | length > 0 %}
+        <h3>Removed Releases</h3>
+        <table>
+          <thead><tr><th>Key</th><th>Details</th></tr></thead>
+          <tbody>
+            {% for r in hd.removed %}
+              <tr>
+                <td class="mono">{{ r.key }}</td>
+                <td class="mono">{{ r.value }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      {% if (hd.changed or []) | length > 0 %}
+        <h3>Changed Releases</h3>
+        <ul>
+          {% for k in hd.changed %}
+            <li class="mono">{{ k }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  </section>
+
+  <footer class="muted" style="margin-top:18px">
+    <p>Source: <span class="mono">{{ report_dir }}/alerts.json</span> and <span class="mono">{{ analysis_output_json }}</span></p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,40 @@
+---
+- name: Check helm subdir
+  when: enable_analyzer | default(true)
+  ansible.builtin.stat:
+    path: "{{ log_dir }}/helm"
+  register: helm_dir
+
+- name: Find helm history TXT files
+  when: (enable_analyzer | default(true)) and (helm_dir.stat.exists)
+  ansible.builtin.find:
+    paths: "{{ log_dir }}/helm"
+    patterns: ["helm-history-*.txt"]
+    file_type: file
+    recurse: false
+  register: found_helm_history
+
+- name: Derive already indexed Helm history files
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    already_indexed_helm_history: >-
+      {{
+        (master_json.helm.histories | default([]))
+        | map(attribute='source_file') | list
+      }}
+
+- name: Filter new Helm history TXT files
+  when: enable_analyzer | default(true)
+  ansible.builtin.set_fact:
+    new_helm_history: >-
+      {{
+        (found_helm_history.files | default([]))
+        | selectattr('path', 'defined')
+        | rejectattr('path', 'in', already_indexed_helm_history | default([]))
+        | list
+      }}
+
+- name: No new helm history files to index
+  when: (enable_analyzer | default(true)) and (new_helm_history | length == 0)
+  ansible.builtin.debug:
+    msg: "No new helm history files to index."
